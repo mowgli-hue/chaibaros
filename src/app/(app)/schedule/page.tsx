@@ -5,7 +5,7 @@ import { and, eq, gte, inArray, lte } from "drizzle-orm";
 import { requireViewer, pickLocation, canManage, canSeePay } from "@/lib/access";
 import { Shell, PageTitle, Badge } from "@/components/shell";
 import { db } from "@/db";
-import { availability, employeeProfiles, memberships, shiftClaims, shifts, users } from "@/db/schema";
+import { availability, employeeProfiles, memberships, shifts, users } from "@/db/schema";
 import { fmtDate, fmtDay, fmtTime, parseWeek, weekRange, money, paidHours } from "@/lib/dates";
 import { checkWeek, labourCostCents } from "@/lib/rules";
 import { assignShift, createShift, decideClaim, deleteShift, pinPunch, publishWeek } from "@/actions/schedule";

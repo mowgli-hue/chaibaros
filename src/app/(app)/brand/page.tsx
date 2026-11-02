@@ -38,7 +38,7 @@ export default async function BrandPage() {
                   <input name="requiredCerts" className="input" defaultValue={(settings.requiredCerts ?? ["business_licence", "health_permit", "foodsafe_l1", "insurance"]).join(", ")} />
                 </div>
                 <button className="btn-primary">Save</button>
-                <p className="text-xs text-[#7a6a5c]">Royalty and ad fund are applied to each store's net sales once the Clover / order feed is live.</p>
+                <p className="text-xs text-[#7a6a5c]">Royalty and ad fund are applied to each store&apos;s net sales once the Clover / order feed is live.</p>
               </form>
 
               <form action={addFranchisee} className="card space-y-3 lg:col-span-2">

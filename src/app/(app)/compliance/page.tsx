@@ -3,7 +3,7 @@ import { eq, inArray } from "drizzle-orm";
 import { requireViewer, canManage } from "@/lib/access";
 import { Shell, PageTitle, Badge } from "@/components/shell";
 import { db } from "@/db";
-import { certificates, memberships, users } from "@/db/schema";
+import { memberships, users } from "@/db/schema";
 import { addCertificate, removeCertificate } from "@/actions/compliance";
 import { fmtDate } from "@/lib/dates";
 
@@ -28,6 +28,8 @@ export default async function CompliancePage({ searchParams }: { searchParams: P
   const brand = await db.query.brands.findFirst({ where: (b, { eq }) => eq(b.id, shown[0].brandId) });
   const required = ((brand?.settings as { requiredCerts?: string[] })?.requiredCerts ?? ["business_licence", "health_permit", "foodsafe_l1", "insurance"]);
   const team = await db.select({ id: users.id, name: users.name, locationId: memberships.locationId }).from(memberships).innerJoin(users, eq(users.id, memberships.userId)).where(inArray(memberships.locationId, shown.map((l) => l.id)));
+  // Server component: evaluated once per request.
+  // eslint-disable-next-line react-hooks/purity
   const now = Date.now();
   const soon = now + 30 * 24 * 3600 * 1000;
   const status = (c?: { expiresAt: Date | null }) => !c ? ["missing", "bad"] as const : !c.expiresAt ? ["on file", "good"] as const : c.expiresAt.getTime() < now ? ["expired", "bad"] as const : c.expiresAt.getTime() < soon ? ["expiring", "warn"] as const : ["valid", "good"] as const;

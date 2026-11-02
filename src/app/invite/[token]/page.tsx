@@ -17,7 +17,7 @@ export default async function InvitePage({ params }: { params: Promise<{ token: 
   return (
     <Shell title={`Join ${env.appName}`}>
       <p className="mb-4">
-        {invite.name ? `Hi ${invite.name}, ` : ""}you've been invited as <b>{invite.role.replace("_", " ")}</b>.
+        {invite.name ? `Hi ${invite.name}, ` : ""}you&apos;ve been invited as <b>{invite.role.replace("_", " ")}</b>.
       </p>
       {signedInAsInvitee ? (
         <form action={async () => { "use server"; await acceptInvite(token); }}>
@@ -30,7 +30,7 @@ export default async function InvitePage({ params }: { params: Promise<{ token: 
             await signIn("resend", { email: invite.email, redirectTo: `/invite/${token}` });
           }}
         >
-          <p className="text-sm text-[#7a6a5c] mb-3">We'll email a sign-in link to <b>{invite.email}</b>.</p>
+          <p className="text-sm text-[#7a6a5c] mb-3">We&apos;ll email a sign-in link to <b>{invite.email}</b>.</p>
           <button className="btn-primary w-full">Email me a sign-in link</button>
         </form>
       )}

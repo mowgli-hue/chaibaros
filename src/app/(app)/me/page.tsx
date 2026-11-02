@@ -85,7 +85,7 @@ export default async function MePage() {
                 <form action={removeAvailability}><input type="hidden" name="id" value={a.id} /><button className="btn-secondary btn-sm">✕</button></form>
               </li>
             ))}
-            {avail.length === 0 && <li className="text-[#7a6a5c]">Not set — managers will assume you're flexible.</li>}
+            {avail.length === 0 && <li className="text-[#7a6a5c]">Not set — managers will assume you&apos;re flexible.</li>}
           </ul>
           <form action={addAvailability} className="grid grid-cols-3 gap-2 items-end">
             <div><label className="label">Day</label><select name="weekday" className="input">{weekdays.map((d, i) => <option key={d} value={i}>{d}</option>)}</select></div>
