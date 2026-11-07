@@ -1,6 +1,7 @@
 import { and, count, eq, gte, inArray, isNull, lte, sql } from "drizzle-orm";
 import { db } from "@/db";
-import { certificates, memberships, shifts, stockLevels, timeEntries } from "@/db/schema";
+import { certificates, factSalesDaily, memberships, orders, shifts, stockLevels, timeEntries } from "@/db/schema";
+import { fmtDate } from "./dates";
 import { weekRange } from "./dates";
 
 export type LocationHealth = {
@@ -13,13 +14,17 @@ export type LocationHealth = {
   belowPar: number;
   expiringCerts: number;
   expiredCerts: number;
+  todayGrossCents: number;
+  todayOrders: number;
+  mtdGrossCents: number;
+  liveOrders: number;
 };
 
 export async function locationHealth(locationIds: string[]): Promise<Record<string, LocationHealth>> {
   const out: Record<string, LocationHealth> = {};
   if (!locationIds.length) return out;
   for (const id of locationIds) {
-    out[id] = { locationId: id, staff: 0, shiftsThisWeek: 0, openShifts: 0, draftShifts: 0, clockedInNow: 0, belowPar: 0, expiringCerts: 0, expiredCerts: 0 };
+    out[id] = { locationId: id, staff: 0, shiftsThisWeek: 0, openShifts: 0, draftShifts: 0, clockedInNow: 0, belowPar: 0, expiringCerts: 0, expiredCerts: 0, todayGrossCents: 0, todayOrders: 0, mtdGrossCents: 0, liveOrders: 0 };
   }
   const { start, end } = weekRange(new Date());
   const in30 = new Date(Date.now() + 30 * 24 * 3600 * 1000);
@@ -67,6 +72,23 @@ export async function locationHealth(locationIds: string[]): Promise<Record<stri
     if (c.expiresAt < now) out[c.locationId].expiredCerts += 1;
     else out[c.locationId].expiringCerts += 1;
   });
+
+  const today = fmtDate(now);
+  const monthStart = today.slice(0, 8) + "01";
+  const facts = await db
+    .select({ locationId: factSalesDaily.locationId, day: factSalesDaily.day, gross: factSalesDaily.grossCents, n: factSalesDaily.ordersCount })
+    .from(factSalesDaily)
+    .where(and(inArray(factSalesDaily.locationId, locationIds), gte(factSalesDaily.day, monthStart)));
+  facts.forEach((f) => {
+    out[f.locationId].mtdGrossCents += f.gross;
+    if (f.day === today) { out[f.locationId].todayGrossCents += f.gross; out[f.locationId].todayOrders += f.n; }
+  });
+  const live = await db
+    .select({ locationId: orders.locationId, n: count() })
+    .from(orders)
+    .where(and(inArray(orders.locationId, locationIds), inArray(orders.status, ["received", "accepted", "preparing", "ready"])))
+    .groupBy(orders.locationId);
+  live.forEach((r) => { out[r.locationId].liveOrders = r.n; });
 
   return out;
 }

@@ -2,7 +2,7 @@ import Link from "next/link";
 import { requireViewer, pickLocation } from "@/lib/access";
 import { Shell, PageTitle, Badge } from "@/components/shell";
 import { locationHealth, myUpcomingShifts } from "@/lib/queries";
-import { fmtDateTime } from "@/lib/dates";
+import { fmtDateTime, money } from "@/lib/dates";
 import { db } from "@/db";
 
 export default async function Dashboard({ searchParams }: { searchParams: Promise<{ location?: string }> }) {
@@ -18,9 +18,10 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
     : [];
 
   const totals = Object.values(health).reduce(
-    (a, h) => ({ staff: a.staff + h.staff, open: a.open + h.openShifts, draft: a.draft + h.draftShifts, par: a.par + h.belowPar, certs: a.certs + h.expiringCerts + h.expiredCerts, clocked: a.clocked + h.clockedInNow }),
-    { staff: 0, open: 0, draft: 0, par: 0, certs: 0, clocked: 0 },
+    (a, h) => ({ staff: a.staff + h.staff, open: a.open + h.openShifts, draft: a.draft + h.draftShifts, par: a.par + h.belowPar, certs: a.certs + h.expiringCerts + h.expiredCerts, clocked: a.clocked + h.clockedInNow, today: a.today + h.todayGrossCents, todayOrders: a.todayOrders + h.todayOrders, mtd: a.mtd + h.mtdGrossCents, live: a.live + h.liveOrders }),
+    { staff: 0, open: 0, draft: 0, par: 0, certs: 0, clocked: 0, today: 0, todayOrders: 0, mtd: 0, live: 0 },
   );
+  const royaltyPct = brands[0] ? Number(brands[0].royaltyPct) : 0;
 
   return (
     <Shell viewer={viewer} locationId={active?.id ?? null}>
@@ -31,8 +32,13 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
 
       {managed.length > 0 && (
         <>
-          <div className="grid gap-3 grid-cols-2 md:grid-cols-6 mb-6">
+          <div className="grid gap-3 grid-cols-2 md:grid-cols-4 mb-3">
+            <Money label="Net sales today" value={totals.today} sub={`${totals.todayOrders} orders`} />
+            <Money label="Net sales month to date" value={totals.mtd} sub={viewer.isFranchisor && royaltyPct ? `royalty due ≈ ${money(Math.round((totals.mtd * royaltyPct) / 100))}` : undefined} />
+            <Stat label="Live orders" value={totals.live} tone={totals.live ? "warn" : undefined} />
             <Stat label="Stores" value={managed.length} />
+          </div>
+          <div className="grid gap-3 grid-cols-2 md:grid-cols-5 mb-6">
             <Stat label="Staff" value={totals.staff} />
             <Stat label="Clocked in now" value={totals.clocked} />
             <Stat label="Open shifts this week" value={totals.open} tone={totals.open ? "warn" : "good"} />
@@ -44,7 +50,7 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
             <table className="table">
               <thead>
                 <tr>
-                  <th>Store</th><th>Status</th><th>Staff</th><th>Shifts this week</th><th>Open</th><th>Draft</th><th>Clocked in</th><th>Below par</th><th>Certificates</th><th></th>
+                  <th>Store</th><th>Status</th><th>Today</th><th>MTD</th><th>Live</th><th>Staff</th><th>Shifts this week</th><th>Open</th><th>Draft</th><th>Clocked in</th><th>Below par</th><th>Certificates</th><th></th>
                 </tr>
               </thead>
               <tbody>
@@ -54,6 +60,9 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
                     <tr key={l.id}>
                       <td className="font-medium">{l.name}<div className="text-xs text-[#7a6a5c]">{[l.city, l.province].filter(Boolean).join(", ")}</div></td>
                       <td><Badge tone={l.status === "open" ? "good" : l.status === "closed" ? "bad" : "info"}>{l.status.replace("_", "-")}</Badge></td>
+                      <td>{money(h.todayGrossCents)}<div className="text-xs text-[#7a6a5c]">{h.todayOrders} orders</div></td>
+                      <td>{money(h.mtdGrossCents)}</td>
+                      <td>{h.liveOrders ? <Badge tone="warn">{h.liveOrders}</Badge> : "0"}</td>
                       <td>{h.staff}</td>
                       <td>{h.shiftsThisWeek}</td>
                       <td>{h.openShifts ? <Badge tone="warn">{h.openShifts}</Badge> : "0"}</td>
@@ -62,6 +71,7 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
                       <td>{h.belowPar ? <Badge tone="warn">{h.belowPar}</Badge> : <Badge tone="good">ok</Badge>}</td>
                       <td>{h.expiredCerts ? <Badge tone="bad">{h.expiredCerts} expired</Badge> : h.expiringCerts ? <Badge tone="warn">{h.expiringCerts} expiring</Badge> : <Badge tone="good">ok</Badge>}</td>
                       <td className="whitespace-nowrap">
+                        <Link className="btn-secondary btn-sm mr-1" href={`/orders?location=${l.id}`}>Orders</Link>
                         <Link className="btn-secondary btn-sm mr-1" href={`/schedule?location=${l.id}`}>Schedule</Link>
                         <Link className="btn-secondary btn-sm" href={`/inventory?location=${l.id}`}>Inventory</Link>
                       </td>
@@ -94,12 +104,23 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
               <li><Link className="underline" href="/brand">Brand settings, royalty %, franchisees</Link></li>
               <li><Link className="underline" href="/locations">All locations</Link></li>
               <li><Link className="underline" href="/compliance">Compliance across stores</Link></li>
-              <li className="text-[#7a6a5c]">Sales, royalty due and labour % appear here once the Clover feed is connected (Phase 2).</li>
+              <li><Link className="underline" href="/reports">Sales & royalty report (export CSV)</Link></li>
+              <li><Link className="underline" href="/menu">Brand menu</Link></li>
             </ul>
           </div>
         )}
       </div>
     </Shell>
+  );
+}
+
+function Money({ label, value, sub }: { label: string; value: number; sub?: string }) {
+  return (
+    <div className="card !p-4">
+      <div className="text-xs uppercase tracking-wide text-[#7a6a5c]">{label}</div>
+      <div className="text-2xl font-semibold">{money(value)}</div>
+      {sub && <div className="text-xs text-[#7a6a5c]">{sub}</div>}
+    </div>
   );
 }
 

@@ -6,12 +6,17 @@ import { LocationPicker } from "./location-picker";
 
 const nav = [
   { href: "/dashboard", label: "Dashboard", min: "staff" },
+  { href: "/orders", label: "Orders", min: "staff" },
   { href: "/me", label: "My shifts", min: "staff" },
   { href: "/schedule", label: "Schedule", min: "shift_lead" },
+  { href: "/menu", label: "Menu", min: "shift_lead" },
   { href: "/staff", label: "Staff", min: "manager" },
   { href: "/timesheets", label: "Timesheets", min: "manager" },
   { href: "/inventory", label: "Inventory", min: "shift_lead" },
   { href: "/compliance", label: "Compliance", min: "manager" },
+  { href: "/customers", label: "Customers", min: "manager" },
+  { href: "/reports", label: "Reports", min: "manager" },
+  { href: "/integrations", label: "Integrations", min: "manager" },
   { href: "/locations", label: "Locations", min: "owner" },
   { href: "/brand", label: "Brand", min: "franchisor" },
 ] as const;

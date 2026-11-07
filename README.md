@@ -1,10 +1,21 @@
-# Chai Bar OS — v1 (franchise management, staff, scheduling, inventory, compliance)
+# Chai Bar OS — franchise operations platform
 
-Back office for The Chai Bar and its franchise network. v1 is internal-only: no POS or
-orders yet. The schema is built for the full roadmap (order hub, CRM, loyalty, marketing,
-POS) so nothing here gets thrown away.
+Back office for The Chai Bar and its franchise network: every store, every channel, one
+database. v1 = people and stock; Phase 2 = orders, menu, Clover feed, public API, reports.
 
-## What's in v1
+## Phase 2 (orders & channels)
+
+| Area | What works |
+| --- | --- |
+| Order Hub | One live board per store (New → Accepted → Preparing → Ready), tickets colour-tagged by channel, late-order colouring, item-level done, accept with ready time, cancel/refund with reason, counter order entry (POS-lite) with per-item tax, completed-today list and history. Auto-refreshes every 10 s. |
+| Menu | Brand master menu (categories, items, modifier groups, tax class, station), per-store price overrides, sold-out toggle that propagates to App Thru / Vlink / Clover, per-channel hiding, recipes for auto-depletion. |
+| Public API `/api/v1` | HMAC-signed (`X-Api-Key`, `X-Timestamp`, `X-Signature`): `POST /orders` (idempotent ingestion from App Thru / Vlink / TiffinGo / aggregator bridges), `GET /menu`, `GET /orders` (polling), `POST /orders/:id/status`. Outbound signed webhooks `order.*` with retries. |
+| Clover | Connect a store with merchant id + API token, import its catalogue, sync paid orders into the hub (cursor-based), mirror sold-outs back to the register. `GET /api/cron?secret=` runs sync + webhook retries. |
+| Customers | One record per phone across every channel/store, visits, lifetime value, consent with source. |
+| Reports | Net sales, orders, direct vs aggregator share, commission paid, per-channel columns, royalty and ad-fund due per store (franchisor), CSV export, daily bars. Dashboard shows today / MTD / live orders per store. |
+| Tax | Per province (BC GST 5% + PST 7% on `gst_pst` items; AB, SK, MB, ON, QC tables), computed once on the receipt totals. |
+
+## v1 (people & stock)
 
 | Area | What works |
 | --- | --- |
@@ -28,6 +39,24 @@ npx drizzle-kit migrate             # creates all tables
 OWNER_EMAIL=you@thechaibar.ca npx tsx scripts/seed.ts   # optional demo data: 3 stores, staff, stock
 npm run dev
 ```
+
+Dev reset: `DATABASE_URL=… ./scripts/reset-db.sh` (drops everything, migrates, seeds 4 stores, a chai menu and 14 days of orders).
+The seed prints a demo App Thru API client: key `cb_demo_appthru`, secret `sk_demo_appthru_000…`.
+
+## API quick reference
+
+```
+ts  = unix seconds
+sig = HMAC_SHA256(secret, ts + "." + rawBody)      # GET: rawBody = ""
+headers: X-Api-Key: <keyId>  X-Timestamp: <ts>  X-Signature: <sig>
+
+POST /api/v1/orders                 body: see src/lib/orders.ts inboundOrderSchema (idempotency_key required)
+GET  /api/v1/menu?location_id=      live menu with store prices + available flags (ETag)
+GET  /api/v1/orders?location_id=&since=ISO&status=received,accepted
+POST /api/v1/orders/{id}/status     {"status":"ready","ready_by":"ISO","note":"…"}
+GET  /api/cron?secret=CRON_SECRET   every 2–5 min: Clover sync + webhook retries
+```
+Outbound webhooks: `POST <webhookUrl>` with `X-Chaibar-Signature = HMAC_SHA256(secret, body)`, events `order.received … order.refunded`.
 
 With no `RESEND_API_KEY`, sign-in links and invites are printed to the terminal instead of emailed.
 Sign in with the `OWNER_EMAIL` you seeded (franchisor + owner). Seeded store PIN for everyone: `1234`.
@@ -55,4 +84,4 @@ drizzle/                SQL migrations
 
 ## Roadmap (same database)
 
-Phase 2 order hub + KDS + Clover feed → Phase 3 customer CRM + loyalty + daily close → Phase 4 marketing engine → Phase 5 counter POS + Stripe Terminal + delivery apps → Phase 6 multi-tenant billing for the franchise network. See the spec doc "Chai Bar OS — Custom Restaurant CRM & Operations Platform Spec".
+Phase 2 ✅ order hub + menu + Clover feed + API → Phase 3 loyalty + daily close/cash + QBO journal → Phase 4 marketing engine (WhatsApp/SMS, segments, automations) → Phase 5 counter POS + Stripe Terminal + direct delivery-app APIs → Phase 6 multi-tenant billing for the franchise network. See the spec doc "Chai Bar OS — Custom Restaurant CRM & Operations Platform Spec".

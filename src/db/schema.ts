@@ -541,3 +541,384 @@ export type Membership = typeof memberships.$inferSelect;
 export type Shift = typeof shifts.$inferSelect;
 export type Ingredient = typeof ingredients.$inferSelect;
 export type StockLevel = typeof stockLevels.$inferSelect;
+
+// ===========================================================================
+// PHASE 2 — Menu, orders, customers, integrations, sales facts
+// ===========================================================================
+
+export const channelEnum = pgEnum("channel", [
+  "counter", // our POS / manual entry
+  "clover", // Clover POS feed
+  "app_thru",
+  "vlink",
+  "tiffingo",
+  "uber_eats",
+  "doordash",
+  "skip",
+  "other",
+]);
+
+export const orderStatusEnum = pgEnum("order_status", [
+  "received",
+  "accepted",
+  "preparing",
+  "ready",
+  "completed",
+  "cancelled",
+  "refunded",
+]);
+
+export const fulfilmentEnum = pgEnum("fulfilment", ["dine_in", "pickup", "delivery"]);
+
+export const integrationProviderEnum = pgEnum("integration_provider", [
+  "clover",
+  "uber_eats",
+  "doordash",
+  "skip",
+  "otter",
+]);
+
+// ---------------------------------------------------------------------------
+// Menu: master catalogue at brand level; org/location overrides
+// ---------------------------------------------------------------------------
+
+export const menuCategories = pgTable(
+  "menu_categories",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    brandId: text("brand_id")
+      .notNull()
+      .references(() => brands.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    sortOrder: integer("sort_order").notNull().default(0),
+    active: boolean("active").notNull().default(true),
+  },
+  (t) => [index("menu_categories_brand_idx").on(t.brandId)],
+);
+
+export const menuItems = pgTable(
+  "menu_items",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    brandId: text("brand_id")
+      .notNull()
+      .references(() => brands.id, { onDelete: "cascade" }),
+    categoryId: text("category_id").references(() => menuCategories.id, { onDelete: "set null" }),
+    sku: text("sku").notNull(),
+    name: text("name").notNull(),
+    description: text("description"),
+    priceCents: integer("price_cents").notNull().default(0),
+    /** Tax class: gst_only (prepared food, hot drinks) | gst_pst (pop, retail goods) | exempt */
+    taxClass: text("tax_class").notNull().default("gst_only"),
+    station: text("station").notNull().default("bar"), // bar | kitchen | packing
+    imageUrl: text("image_url"),
+    allergens: jsonb("allergens").$type<string[]>().notNull().default([]),
+    sortOrder: integer("sort_order").notNull().default(0),
+    active: boolean("active").notNull().default(true),
+    /** Linked ingredient depletion: [{ingredientId, qty}] — used for auto-depletion on sale. */
+    recipe: jsonb("recipe").$type<Array<{ ingredientId: string; qty: number }>>().notNull().default([]),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("menu_items_brand_sku").on(t.brandId, t.sku), index("menu_items_brand_idx").on(t.brandId)],
+);
+
+export const modifierGroups = pgTable("modifier_groups", {
+  id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+  brandId: text("brand_id")
+    .notNull()
+    .references(() => brands.id, { onDelete: "cascade" }),
+  name: text("name").notNull(), // "Milk", "Sweetness", "Size"
+  minSelect: integer("min_select").notNull().default(0),
+  maxSelect: integer("max_select").notNull().default(1),
+  sortOrder: integer("sort_order").notNull().default(0),
+});
+
+export const modifiers = pgTable("modifiers", {
+  id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+  groupId: text("group_id")
+    .notNull()
+    .references(() => modifierGroups.id, { onDelete: "cascade" }),
+  sku: text("sku").notNull(),
+  name: text("name").notNull(),
+  priceCents: integer("price_cents").notNull().default(0),
+  sortOrder: integer("sort_order").notNull().default(0),
+  active: boolean("active").notNull().default(true),
+});
+
+export const itemModifierGroups = pgTable(
+  "item_modifier_groups",
+  {
+    itemId: text("item_id")
+      .notNull()
+      .references(() => menuItems.id, { onDelete: "cascade" }),
+    groupId: text("group_id")
+      .notNull()
+      .references(() => modifierGroups.id, { onDelete: "cascade" }),
+  },
+  (t) => [primaryKey({ columns: [t.itemId, t.groupId] })],
+);
+
+/** Per-store overrides: price, availability (sold out), channel visibility, external POS ids. */
+export const itemLocationSettings = pgTable(
+  "item_location_settings",
+  {
+    locationId: text("location_id")
+      .notNull()
+      .references(() => locations.id, { onDelete: "cascade" }),
+    itemId: text("item_id")
+      .notNull()
+      .references(() => menuItems.id, { onDelete: "cascade" }),
+    priceCents: integer("price_cents"), // null = brand price
+    available: boolean("available").notNull().default(true),
+    soldOutUntil: timestamp("sold_out_until", { withTimezone: true }),
+    hiddenChannels: jsonb("hidden_channels").$type<string[]>().notNull().default([]),
+    /** { clover: "ITEMID", uber_eats: "..." } */
+    externalIds: jsonb("external_ids").$type<Record<string, string>>().notNull().default({}),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.locationId, t.itemId] })],
+);
+
+// ---------------------------------------------------------------------------
+// Customers (light; CRM proper is Phase 3)
+// ---------------------------------------------------------------------------
+
+export const customers = pgTable(
+  "customers",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    brandId: text("brand_id")
+      .notNull()
+      .references(() => brands.id, { onDelete: "cascade" }),
+    name: text("name"),
+    phone: text("phone"),
+    email: text("email"),
+    externalIds: jsonb("external_ids").$type<Record<string, string>>().notNull().default({}),
+    marketingConsent: boolean("marketing_consent").notNull().default(false),
+    consentSource: text("consent_source"),
+    consentAt: timestamp("consent_at", { withTimezone: true }),
+    firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow(),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+    visits: integer("visits").notNull().default(0),
+    lifetimeCents: integer("lifetime_cents").notNull().default(0),
+  },
+  (t) => [
+    uniqueIndex("customers_brand_phone").on(t.brandId, sql`coalesce(${t.phone}, '')`),
+    index("customers_brand_email_idx").on(t.brandId, t.email),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// Orders
+// ---------------------------------------------------------------------------
+
+export const orders = pgTable(
+  "orders",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    locationId: text("location_id")
+      .notNull()
+      .references(() => locations.id, { onDelete: "cascade" }),
+    brandId: text("brand_id")
+      .notNull()
+      .references(() => brands.id, { onDelete: "cascade" }),
+    /** Short human number shown on tickets, per location per day. */
+    number: integer("number").notNull(),
+    channel: channelEnum("channel").notNull(),
+    externalId: text("external_id"),
+    idempotencyKey: text("idempotency_key").notNull(),
+    status: orderStatusEnum("status").notNull().default("received"),
+    fulfilment: fulfilmentEnum("fulfilment").notNull().default("pickup"),
+    requestedAt: timestamp("requested_at", { withTimezone: true }),
+    readyBy: timestamp("ready_by", { withTimezone: true }),
+    customerId: text("customer_id").references(() => customers.id, { onDelete: "set null" }),
+    customerName: text("customer_name"),
+    customerPhone: text("customer_phone"),
+    notes: text("notes"),
+    subtotalCents: integer("subtotal_cents").notNull().default(0),
+    discountCents: integer("discount_cents").notNull().default(0),
+    gstCents: integer("gst_cents").notNull().default(0),
+    pstCents: integer("pst_cents").notNull().default(0),
+    tipCents: integer("tip_cents").notNull().default(0),
+    feeCents: integer("fee_cents").notNull().default(0), // App Thru $0.49, delivery fee
+    commissionCents: integer("commission_cents").notNull().default(0), // aggregator commission (negative margin)
+    totalCents: integer("total_cents").notNull().default(0),
+    paymentStatus: text("payment_status").notNull().default("unpaid"), // unpaid | paid | refunded
+    paymentProvider: text("payment_provider"),
+    paymentRef: text("payment_ref"),
+    tender: text("tender"), // cash | card | online | external
+    placedAt: timestamp("placed_at", { withTimezone: true }).notNull().defaultNow(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    actorId: text("actor_id").references(() => users.id, { onDelete: "set null" }),
+    raw: jsonb("raw"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("orders_idempotency").on(t.idempotencyKey),
+    index("orders_location_placed_idx").on(t.locationId, t.placedAt),
+    index("orders_location_status_idx").on(t.locationId, t.status),
+    index("orders_customer_idx").on(t.customerId),
+  ],
+);
+
+export const orderItems = pgTable(
+  "order_items",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    orderId: text("order_id")
+      .notNull()
+      .references(() => orders.id, { onDelete: "cascade" }),
+    itemId: text("item_id").references(() => menuItems.id, { onDelete: "set null" }),
+    sku: text("sku"),
+    name: text("name").notNull(),
+    qty: integer("qty").notNull().default(1),
+    unitPriceCents: integer("unit_price_cents").notNull().default(0),
+    modifiers: jsonb("modifiers").$type<Array<{ sku?: string; name: string; priceCents: number }>>().notNull().default([]),
+    notes: text("notes"),
+    station: text("station").notNull().default("bar"),
+    doneAt: timestamp("done_at", { withTimezone: true }),
+    lineTotalCents: integer("line_total_cents").notNull().default(0),
+  },
+  (t) => [index("order_items_order_idx").on(t.orderId)],
+);
+
+export const orderEvents = pgTable(
+  "order_events",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    orderId: text("order_id")
+      .notNull()
+      .references(() => orders.id, { onDelete: "cascade" }),
+    status: orderStatusEnum("status").notNull(),
+    note: text("note"),
+    actorId: text("actor_id").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("order_events_order_idx").on(t.orderId)],
+);
+
+// ---------------------------------------------------------------------------
+// Integrations
+// ---------------------------------------------------------------------------
+
+/** API clients for our own apps (App Thru, Vlink, TiffinGo). HMAC-SHA256 over the raw body. */
+export const apiClients = pgTable("api_clients", {
+  id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+  brandId: text("brand_id")
+    .notNull()
+    .references(() => brands.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  channel: channelEnum("channel").notNull(),
+  keyId: text("key_id").notNull().unique(), // public identifier sent in X-Api-Key
+  secretHash: text("secret_hash").notNull(), // bcrypt of secret; secret shown once
+  secretHint: text("secret_hint").notNull(), // last 4
+  /** Secret kept for HMAC verification (needs raw secret). Stored encrypted-at-rest by Postgres/disk; rotate via UI. */
+  secret: text("secret").notNull(),
+  webhookUrl: text("webhook_url"),
+  locationIds: jsonb("location_ids").$type<string[]>().notNull().default([]), // [] = all brand locations
+  active: boolean("active").notNull().default(true),
+  lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** Third-party POS / delivery connections per store. */
+export const locationIntegrations = pgTable(
+  "location_integrations",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    locationId: text("location_id")
+      .notNull()
+      .references(() => locations.id, { onDelete: "cascade" }),
+    provider: integrationProviderEnum("provider").notNull(),
+    /** provider-specific: { merchantId, apiToken, region } for Clover */
+    config: jsonb("config").$type<Record<string, string>>().notNull().default({}),
+    status: text("status").notNull().default("disconnected"), // disconnected | connected | error
+    lastSyncAt: timestamp("last_sync_at", { withTimezone: true }),
+    lastError: text("last_error"),
+    cursor: text("cursor"), // e.g. last modifiedTime synced
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("location_integrations_unique").on(t.locationId, t.provider)],
+);
+
+export const webhookDeliveries = pgTable("webhook_deliveries", {
+  id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+  apiClientId: text("api_client_id").references(() => apiClients.id, { onDelete: "cascade" }),
+  url: text("url").notNull(),
+  event: text("event").notNull(),
+  payload: jsonb("payload").notNull(),
+  attempts: integer("attempts").notNull().default(0),
+  lastStatus: integer("last_status"),
+  lastError: text("last_error"),
+  deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+  nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// ---------------------------------------------------------------------------
+// Sales facts (per location per day) — feeds dashboards and royalty
+// ---------------------------------------------------------------------------
+
+export const factSalesDaily = pgTable(
+  "fact_sales_daily",
+  {
+    locationId: text("location_id")
+      .notNull()
+      .references(() => locations.id, { onDelete: "cascade" }),
+    day: text("day").notNull(), // YYYY-MM-DD in store timezone
+    ordersCount: integer("orders_count").notNull().default(0),
+    grossCents: integer("gross_cents").notNull().default(0), // subtotal - discount (pre-tax)
+    gstCents: integer("gst_cents").notNull().default(0),
+    pstCents: integer("pst_cents").notNull().default(0),
+    tipsCents: integer("tips_cents").notNull().default(0),
+    commissionCents: integer("commission_cents").notNull().default(0),
+    byChannel: jsonb("by_channel").$type<Record<string, { orders: number; grossCents: number }>>().notNull().default({}),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.locationId, t.day] })],
+);
+
+export const menuItemsRelations = relations(menuItems, ({ one, many }) => ({
+  category: one(menuCategories, { fields: [menuItems.categoryId], references: [menuCategories.id] }),
+  modifierGroups: many(itemModifierGroups),
+  locationSettings: many(itemLocationSettings),
+}));
+
+export const itemModifierGroupsRelations = relations(itemModifierGroups, ({ one }) => ({
+  item: one(menuItems, { fields: [itemModifierGroups.itemId], references: [menuItems.id] }),
+  group: one(modifierGroups, { fields: [itemModifierGroups.groupId], references: [modifierGroups.id] }),
+}));
+
+export const modifierGroupsRelations = relations(modifierGroups, ({ many }) => ({
+  modifiers: many(modifiers),
+  items: many(itemModifierGroups),
+}));
+
+export const modifiersRelations = relations(modifiers, ({ one }) => ({
+  group: one(modifierGroups, { fields: [modifiers.groupId], references: [modifierGroups.id] }),
+}));
+
+export const ordersRelations = relations(orders, ({ one, many }) => ({
+  location: one(locations, { fields: [orders.locationId], references: [locations.id] }),
+  customer: one(customers, { fields: [orders.customerId], references: [customers.id] }),
+  items: many(orderItems),
+  events: many(orderEvents),
+}));
+
+export const orderItemsRelations = relations(orderItems, ({ one }) => ({
+  order: one(orders, { fields: [orderItems.orderId], references: [orders.id] }),
+}));
+
+export const orderEventsRelations = relations(orderEvents, ({ one }) => ({
+  order: one(orders, { fields: [orderEvents.orderId], references: [orders.id] }),
+}));
+
+export const customersRelations = relations(customers, ({ many }) => ({
+  orders: many(orders),
+}));
+
+export type Channel = (typeof channelEnum.enumValues)[number];
+export type OrderStatus = (typeof orderStatusEnum.enumValues)[number];
+export type Order = typeof orders.$inferSelect;
+export type OrderItem = typeof orderItems.$inferSelect;
+export type MenuItem = typeof menuItems.$inferSelect;
