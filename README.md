@@ -3,6 +3,17 @@
 Back office for The Chai Bar and its franchise network: every store, every channel, one
 database. v1 = people and stock; Phase 2 = orders, menu, Clover feed, public API, reports.
 
+## Phase 3 (loyalty, daily close, staff API)
+
+| Area | What works |
+| --- | --- |
+| Loyalty | Brand program (points per $, cents per point, min redeem, max % of order, signup/birthday bonus, earn channels). Points earn on completion, reverse on refund, redeem on any order (`redeem_points`), tiers by visits, manual adjustments with audit, liability shown on the Loyalty page. |
+| Promo codes | % off, $ off, free item; min subtotal, channel and store limits, first-order-only, once-per-customer, date window, max redemptions. `POST /api/v1/promos/validate` for App Thru's checkout; `promo_code` on order creation applies it atomically. |
+| Daily close | Cash drawer open → count (float, paid-outs, deposit) → variance; Z-report by tender and channel; tip pool by hours worked; labour % of net; lock the day (refuses while orders are live); owner can reopen. |
+| Accounting | QuickBooks-style balanced journal per store per day (cash, card clearing, aggregator receivable + commission, sales, GST/PST payable, tips payable, platform fees, cash over/short, royalty and ad-fund accruals to the franchisor). `GET /api/export/journal?location=&day=` → CSV. |
+| Staff API (Vlink) | `POST /api/v1/staff/auth` (email or phone + PIN → 30-day bearer token, rate-limited), `/me`, `/shifts`, `/clock` (in with GPS / out with break + tips), `/availability` (GET/PUT), `/open-shifts` + `/claim`, `/locations` (managers see sales), `/logout`. Order endpoints accept the staff bearer too, so Vlink can accept/ready orders as a named person. |
+| Health | `GET /api/health` for uptime checks. |
+
 ## Phase 2 (orders & channels)
 
 | Area | What works |
@@ -55,6 +66,16 @@ GET  /api/v1/menu?location_id=      live menu with store prices + available flag
 GET  /api/v1/orders?location_id=&since=ISO&status=received,accepted
 POST /api/v1/orders/{id}/status     {"status":"ready","ready_by":"ISO","note":"…"}
 GET  /api/cron?secret=CRON_SECRET   every 2–5 min: Clover sync + webhook retries
+GET  /api/v1/customers/lookup?phone=|email=|external_id=   balance, tier, visits
+POST /api/v1/loyalty/quote          {customer_id, subtotal_cents, points?} → redeemable points + discount
+POST /api/v1/promos/validate        {code, location_id, subtotal_cents, customer_id?, item_skus?}
+
+Staff (Vlink) — same app signature PLUS  Authorization: Bearer <staff token>:
+POST /api/v1/staff/auth             {identifier, pin, device?} → {token, user}
+GET  /api/v1/staff/me | /shifts?from&to | /open-shifts | /availability | /locations
+POST /api/v1/staff/clock            {action:"in",location_id,lat?,lng?} | {action:"out",break_min?,tips_cents?}
+PUT  /api/v1/staff/availability     {availability:[{weekday,start_min,end_min}]}
+POST /api/v1/staff/open-shifts/{id}/claim · POST /api/v1/staff/logout
 ```
 Outbound webhooks: `POST <webhookUrl>` with `X-Chaibar-Signature = HMAC_SHA256(secret, body)`, events `order.received … order.refunded`.
 
@@ -84,4 +105,4 @@ drizzle/                SQL migrations
 
 ## Roadmap (same database)
 
-Phase 2 ✅ order hub + menu + Clover feed + API → Phase 3 loyalty + daily close/cash + QBO journal → Phase 4 marketing engine (WhatsApp/SMS, segments, automations) → Phase 5 counter POS + Stripe Terminal + direct delivery-app APIs → Phase 6 multi-tenant billing for the franchise network. See the spec doc "Chai Bar OS — Custom Restaurant CRM & Operations Platform Spec".
+Phase 2 ✅ order hub + menu + Clover feed + API → Phase 3 ✅ loyalty + promos + daily close + journal + staff API → Phase 4 marketing engine (WhatsApp/SMS, segments, automations) → Phase 5 counter POS + Stripe Terminal + direct delivery-app APIs → Phase 6 multi-tenant billing for the franchise network. See the spec doc "Chai Bar OS — Custom Restaurant CRM & Operations Platform Spec".

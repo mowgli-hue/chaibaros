@@ -15,6 +15,13 @@
       "when": 1794092944984,
       "tag": "0001_phase2_orders_menu",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794095714675,
+      "tag": "0002_phase3_loyalty_close_staff_api",
+      "breakpoints": true
     }
   ]
 }

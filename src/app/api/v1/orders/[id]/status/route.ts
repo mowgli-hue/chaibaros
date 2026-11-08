@@ -3,6 +3,7 @@ import { z } from "zod";
 import { db } from "@/db";
 import { orders } from "@/db/schema";
 import { authenticate, clientMayUseLocation, json } from "@/lib/api-auth";
+import { authenticateStaff } from "@/lib/staff-auth";
 import { transitionOrder } from "@/lib/orders";
 
 export const dynamic = "force-dynamic";
@@ -12,6 +13,8 @@ const schema = z.object({ status: z.enum(["accepted", "preparing", "ready", "com
 /** POST /api/v1/orders/:id/status — Vlink accepts / readies / cancels. */
 export async function POST(req: Request, ctx: { params: Promise<{ id: string }> }) {
   const raw = await req.text();
+  const staff = req.headers.get("authorization") ? await authenticateStaff(req, raw) : null;
+  if (staff instanceof Response) return staff;
   const auth = await authenticate(req, raw);
   if (auth instanceof Response) return auth;
   const { id } = await ctx.params;
@@ -19,8 +22,9 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   if (!parsed.success) return json({ error: "validation", issues: parsed.error.issues }, 422);
   const [o] = await db.select().from(orders).where(eq(orders.id, id));
   if (!o || o.brandId !== auth.client.brandId || !clientMayUseLocation(auth.client, o.locationId)) return json({ error: "not found" }, 404);
+  if (staff && !staff.viewer.locations.some((l) => l.id === o.locationId)) return json({ error: "not your store" }, 403);
   try {
-    await transitionOrder(id, parsed.data.status, null, parsed.data.note, parsed.data.ready_by ? new Date(parsed.data.ready_by) : undefined);
+    await transitionOrder(id, parsed.data.status, staff?.viewer.id ?? null, parsed.data.note, parsed.data.ready_by ? new Date(parsed.data.ready_by) : undefined);
     return json({ order_id: id, status: parsed.data.status });
   } catch (e) {
     return json({ error: e instanceof Error ? e.message : "failed" }, 409);

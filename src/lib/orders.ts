@@ -17,6 +17,7 @@ import {
 } from "@/db/schema";
 import { fmtDate } from "./dates";
 import { enqueueWebhooks } from "./webhooks";
+import { earnForOrder, quoteRedemption, recordPromoRedemption, redeemForOrder, reverseForOrder, validatePromo } from "./loyalty";
 
 // ---------------------------------------------------------------------------
 // Tax (BC defaults; per-province rates live here so a franchisee in AB/ON is one row)
@@ -83,6 +84,8 @@ export const inboundOrderSchema = z.object({
     .object({ status: z.enum(["unpaid", "paid", "refunded"]).default("unpaid"), provider: z.string().optional(), reference: z.string().optional(), tender: z.string().optional() })
     .default({ status: "unpaid" as const }),
   notes: z.string().optional(),
+  promo_code: z.string().optional(),
+  redeem_points: z.number().int().min(0).optional(),
   placed_at: z.string().datetime().optional(),
   status: z.enum(["received", "accepted", "preparing", "ready", "completed", "cancelled", "refunded"]).optional(),
   raw: z.unknown().optional(),
@@ -140,28 +143,13 @@ export async function createOrder(input: InboundOrder, actorId: string | null = 
     };
   });
 
-  const discount = input.totals.discount_cents ?? 0;
-  // Discounts reduce the taxable bases proportionally; tax is computed once on the aggregate (receipt-level rounding).
-  const factor = discount > 0 && subtotal > 0 ? Math.max(0, subtotal - discount) / subtotal : 1;
-  const gst = taxFor(loc.province, "gst_only", Math.round(gstBase * factor)).gst;
-  const pst = taxFor(loc.province, "gst_pst", Math.round(pstBase * factor)).pst;
-  const totals = {
-    subtotalCents: input.totals.subtotal_cents ?? subtotal,
-    discountCents: discount,
-    gstCents: input.totals.gst_cents ?? gst,
-    pstCents: input.totals.pst_cents ?? pst,
-    tipCents: input.totals.tip_cents ?? 0,
-    feeCents: input.totals.fee_cents ?? 0,
-    commissionCents: input.totals.commission_cents ?? 0,
-  };
-  const totalCents = input.totals.total_cents ?? totals.subtotalCents - totals.discountCents + totals.gstCents + totals.pstCents + totals.tipCents + totals.feeCents;
-
   const placedAt = input.placed_at ? new Date(input.placed_at) : new Date();
   const initialStatus: OrderStatus = input.status ?? (input.channel === "counter" || input.channel === "clover" ? "preparing" : input.channel === "app_thru" || input.channel === "vlink" || input.channel === "tiffingo" ? "accepted" : "received");
 
   const result = await db.transaction(async (tx) => {
-    // Customer upsert by phone (then email).
+    // Customer upsert by phone (then email). Totals are finalized after, because promos and points depend on the customer.
     let customerId: string | null = null;
+    let totalCents = 0;
     const c = input.customer;
     if (c && (c.phone || c.email)) {
       const phone = c.phone ? normalizePhone(c.phone) : null;
@@ -177,7 +165,6 @@ export async function createOrder(input: InboundOrder, actorId: string | null = 
             email: c.email ?? found.email,
             lastSeenAt: placedAt,
             visits: sql`${customers.visits} + 1`,
-            lifetimeCents: sql`${customers.lifetimeCents} + ${totalCents}`,
             ...(c.marketing_consent && !found.marketingConsent ? { marketingConsent: true, consentSource: input.channel, consentAt: new Date() } : {}),
             ...(c.external_id ? { externalIds: { ...found.externalIds, [input.channel]: c.external_id } } : {}),
           })
@@ -197,12 +184,45 @@ export async function createOrder(input: InboundOrder, actorId: string | null = 
             firstSeenAt: placedAt,
             lastSeenAt: placedAt,
             visits: 1,
-            lifetimeCents: totalCents,
+            lifetimeCents: 0,
           })
           .returning();
         customerId = nc.id;
       }
     }
+
+    // Promo code + points redemption → discount; then tax once on the aggregate (receipt-level rounding).
+    let discount = input.totals.discount_cents ?? 0;
+    let promo: Awaited<ReturnType<typeof validatePromo>> | null = null;
+    if (input.promo_code) {
+      promo = await validatePromo({ brandId: loc.brandId, code: input.promo_code, locationId: loc.id, channel: input.channel, subtotalCents: subtotal, customerId, itemSkus: lines.map((l) => l.sku ?? "") });
+      if (!promo.ok) throw new Error(`Promo: ${promo.reason}`);
+      discount += promo.discountCents;
+    }
+    let pointsToRedeem = 0;
+    let pointsDiscount = 0;
+    if (input.redeem_points && customerId) {
+      const q = await quoteRedemption(customerId, loc.brandId, subtotal, input.redeem_points);
+      if (q.points < input.redeem_points) throw new Error(`Loyalty: can redeem at most ${q.points} points on this order`);
+      pointsToRedeem = q.points;
+      pointsDiscount = q.discountCents;
+      discount += pointsDiscount;
+    }
+    discount = Math.min(discount, subtotal);
+    const factor = discount > 0 && subtotal > 0 ? Math.max(0, subtotal - discount) / subtotal : 1;
+    const gst = input.totals.gst_cents ?? taxFor(loc.province, "gst_only", Math.round(gstBase * factor)).gst;
+    const pst = input.totals.pst_cents ?? taxFor(loc.province, "gst_pst", Math.round(pstBase * factor)).pst;
+    const totals = {
+      subtotalCents: input.totals.subtotal_cents ?? subtotal,
+      discountCents: discount,
+      gstCents: gst,
+      pstCents: pst,
+      tipCents: input.totals.tip_cents ?? 0,
+      feeCents: input.totals.fee_cents ?? 0,
+      commissionCents: input.totals.commission_cents ?? 0,
+    };
+    totalCents = input.totals.total_cents ?? totals.subtotalCents - totals.discountCents + totals.gstCents + totals.pstCents + totals.tipCents + totals.feeCents;
+    if (customerId) await tx.update(customers).set({ lifetimeCents: sql`${customers.lifetimeCents} + ${totalCents}` }).where(eq(customers.id, customerId));
 
     // Per-location daily ticket number.
     const day = fmtDate(placedAt);
@@ -255,6 +275,9 @@ export async function createOrder(input: InboundOrder, actorId: string | null = 
       })),
     );
     await tx.insert(orderEvents).values({ orderId: order.id, status: initialStatus, actorId, note: `via ${input.channel}` });
+    if (promo?.ok) await recordPromoRedemption(promo.promotion.id, order.id, customerId, promo.discountCents, tx);
+    if (pointsToRedeem > 0 && customerId) await redeemForOrder(order.id, customerId, pointsToRedeem, actorId, tx);
+    if (initialStatus === "completed") await earnForOrder(order.id, tx);
 
     // Auto-deplete stock by recipe (append-only ledger).
     for (const l of lines) {
@@ -299,6 +322,8 @@ export async function transitionOrder(orderId: string, to: OrderStatus, actorId:
   await db.transaction(async (tx) => {
     await tx.update(orders).set(patch).where(eq(orders.id, orderId));
     await tx.insert(orderEvents).values({ orderId, status: to, actorId, note: note ?? null });
+    if (to === "completed") await earnForOrder(orderId, tx);
+    if (to === "refunded" || (to === "cancelled" && order.status === "completed")) await reverseForOrder(orderId, tx);
     if (to === "cancelled" || to === "refunded") {
       const day = fmtDate(order.placedAt);
       await bumpDailyFact(tx, order.locationId, day, { ordersCount: -1, grossCents: -(order.subtotalCents - order.discountCents), gstCents: -order.gstCents, pstCents: -order.pstCents, tipsCents: -order.tipCents, commissionCents: -order.commissionCents, channel: order.channel });

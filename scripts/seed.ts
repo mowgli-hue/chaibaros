@@ -39,14 +39,14 @@ async function main() {
   const [kg, delta, kc, wr] = stores;
 
   const pin = await bcrypt.hash("1234", 10);
-  const [owner] = await db.insert(s.users).values({ name: "Mowgli", email: OWNER_EMAIL, emailVerified: new Date(), pinHash: pin }).returning();
-  const [manager] = await db.insert(s.users).values({ name: "Store Manager", email: "manager@example.com", emailVerified: new Date(), pinHash: pin }).returning();
+  const [owner] = await db.insert(s.users).values({ name: "Mowgli", email: OWNER_EMAIL, emailVerified: new Date(), pinHash: pin, phone: "+16045550100" }).returning();
+  const [manager] = await db.insert(s.users).values({ name: "Store Manager", email: "manager@example.com", emailVerified: new Date(), pinHash: pin, phone: "+16045550101" }).returning();
   const staff = await db
     .insert(s.users)
     .values([
-      { name: "Simran K.", email: "simran@example.com", emailVerified: new Date(), pinHash: pin },
-      { name: "Arjun S.", email: "arjun@example.com", emailVerified: new Date(), pinHash: pin },
-      { name: "Priya M.", email: "priya@example.com", emailVerified: new Date(), pinHash: pin },
+      { name: "Simran K.", email: "simran@example.com", emailVerified: new Date(), pinHash: pin, phone: "+16045550102" },
+      { name: "Arjun S.", email: "arjun@example.com", emailVerified: new Date(), pinHash: pin, phone: "+16045550103" },
+      { name: "Priya M.", email: "priya@example.com", emailVerified: new Date(), pinHash: pin, phone: "+16045550104" },
     ])
     .returning();
 
@@ -189,6 +189,14 @@ async function main() {
   // ----- API client for App Thru (secret printed below) -----
   const appThruSecret = "sk_demo_appthru_" + "0".repeat(32);
   await db.insert(s.apiClients).values({ brandId: brandRow.id, name: "App Thru (demo)", channel: "app_thru", keyId: "cb_demo_appthru", secret: appThruSecret, secretHash: await bcrypt.hash(appThruSecret, 10), secretHint: appThruSecret.slice(-4), webhookUrl: null });
+
+  // ----- Loyalty program + promo codes -----
+  await db.insert(s.loyaltyPrograms).values({ brandId: brandRow.id, name: "Chai Club" }).onConflictDoNothing();
+  await db.insert(s.promotions).values([
+    { brandId: brandRow.id, code: "FIRSTCHAI", name: "First App Thru order", kind: "percent", value: 20, channels: ["app_thru"], firstOrderOnly: true, oncePerCustomer: true },
+    { brandId: brandRow.id, code: "CHAI5", name: "$5 off $25", kind: "amount", value: 500, minSubtotalCents: 2500, oncePerCustomer: false },
+    { brandId: brandRow.id, code: "SAMOSA", name: "Free samosa with any chai", kind: "free_item", value: 0, freeItemSku: "SNK-SAMOSA", oncePerCustomer: true },
+  ]);
 
   // ----- 14 days of orders across channels -----
   const { createOrder } = await import("../src/lib/orders");

@@ -2,6 +2,7 @@ import { and, desc, eq, gte, inArray } from "drizzle-orm";
 import { db } from "@/db";
 import { locations, orders } from "@/db/schema";
 import { authenticate, clientMayUseLocation, json } from "@/lib/api-auth";
+import { authenticateStaff } from "@/lib/staff-auth";
 import { createOrder, inboundOrderSchema } from "@/lib/orders";
 
 export const dynamic = "force-dynamic";
@@ -28,8 +29,10 @@ export async function POST(req: Request) {
   }
 }
 
-/** GET /api/v1/orders?location_id=&since=ISO&status=a,b — polling for Vlink. */
+/** GET /api/v1/orders?location_id=&since=ISO&status=a,b — polling for Vlink. Accepts app signature alone, or app + staff bearer (then the staff member's store access applies). */
 export async function GET(req: Request) {
+  const staff = req.headers.get("authorization") ? await authenticateStaff(req, "") : null;
+  if (staff instanceof Response) return staff;
   const auth = await authenticate(req, "");
   if (auth instanceof Response) return auth;
   const url = new URL(req.url);
@@ -37,6 +40,7 @@ export async function GET(req: Request) {
   const since = url.searchParams.get("since");
   const statuses = url.searchParams.get("status")?.split(",").filter(Boolean) as (typeof orders.$inferSelect)["status"][] | undefined;
   if (!locationId || !clientMayUseLocation(auth.client, locationId)) return json({ error: "location_id required / not allowed" }, 403);
+  if (staff && !staff.viewer.locations.some((l) => l.id === locationId)) return json({ error: "not your store" }, 403);
   const rows = await db.query.orders.findMany({
     where: (o, { and, eq, gte, inArray }) => and(eq(o.locationId, locationId), eq(o.brandId, auth.client.brandId), since ? gte(o.placedAt, new Date(since)) : undefined, statuses?.length ? inArray(o.status, statuses) : undefined),
     with: { items: true },

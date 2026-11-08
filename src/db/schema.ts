@@ -922,3 +922,208 @@ export type OrderStatus = (typeof orderStatusEnum.enumValues)[number];
 export type Order = typeof orders.$inferSelect;
 export type OrderItem = typeof orderItems.$inferSelect;
 export type MenuItem = typeof menuItems.$inferSelect;
+
+// ===========================================================================
+// PHASE 3 — Loyalty & promos, cash drawer / daily close, staff API tokens
+// ===========================================================================
+
+/** One program per brand. Points mode: earn `pointsPerDollar` on net sales; `redeemCentsPerPoint` sets value. */
+export const loyaltyPrograms = pgTable("loyalty_programs", {
+  brandId: text("brand_id")
+    .primaryKey()
+    .references(() => brands.id, { onDelete: "cascade" }),
+  name: text("name").notNull().default("Chai Club"),
+  active: boolean("active").notNull().default(true),
+  pointsPerDollar: integer("points_per_dollar").notNull().default(10), // 10 pts per $1 net
+  redeemCentsPerPoint: integer("redeem_cents_per_point").notNull().default(1), // 100 pts = $1
+  minRedeemPoints: integer("min_redeem_points").notNull().default(500), // $5
+  maxRedeemPctOfOrder: integer("max_redeem_pct_of_order").notNull().default(50),
+  signupBonusPoints: integer("signup_bonus_points").notNull().default(100),
+  birthdayBonusPoints: integer("birthday_bonus_points").notNull().default(300),
+  earnOnChannels: jsonb("earn_on_channels").$type<string[]>().notNull().default(["counter", "clover", "app_thru", "vlink", "tiffingo"]),
+  pointsExpireDays: integer("points_expire_days"), // null = never
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const loyaltyAccounts = pgTable(
+  "loyalty_accounts",
+  {
+    customerId: text("customer_id")
+      .primaryKey()
+      .references(() => customers.id, { onDelete: "cascade" }),
+    brandId: text("brand_id")
+      .notNull()
+      .references(() => brands.id, { onDelete: "cascade" }),
+    balance: integer("balance").notNull().default(0),
+    lifetimeEarned: integer("lifetime_earned").notNull().default(0),
+    lifetimeRedeemed: integer("lifetime_redeemed").notNull().default(0),
+    tier: text("tier").notNull().default("member"), // member | regular | vip
+    birthday: text("birthday"), // MM-DD
+    lastBirthdayBonusYear: integer("last_birthday_bonus_year"),
+    referralCode: text("referral_code").unique(),
+    referredBy: text("referred_by"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("loyalty_accounts_brand_idx").on(t.brandId)],
+);
+
+/** Append-only. `delta` positive = earn, negative = redeem/expire/adjust. */
+export const loyaltyLedger = pgTable(
+  "loyalty_ledger",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    customerId: text("customer_id")
+      .notNull()
+      .references(() => customers.id, { onDelete: "cascade" }),
+    orderId: text("order_id").references(() => orders.id, { onDelete: "set null" }),
+    kind: text("kind").notNull(), // earn | redeem | signup | birthday | referral | adjust | expire | reversal
+    delta: integer("delta").notNull(),
+    balanceAfter: integer("balance_after").notNull(),
+    note: text("note"),
+    actorId: text("actor_id").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("loyalty_ledger_customer_idx").on(t.customerId, t.createdAt), uniqueIndex("loyalty_ledger_order_kind").on(t.orderId, t.kind)],
+);
+
+export const promotions = pgTable(
+  "promotions",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    brandId: text("brand_id")
+      .notNull()
+      .references(() => brands.id, { onDelete: "cascade" }),
+    code: text("code").notNull(),
+    name: text("name").notNull(),
+    kind: text("kind").notNull().default("percent"), // percent | amount | free_item
+    value: integer("value").notNull().default(10), // percent, or cents, or (free_item) 0
+    freeItemSku: text("free_item_sku"),
+    minSubtotalCents: integer("min_subtotal_cents").notNull().default(0),
+    channels: jsonb("channels").$type<string[]>().notNull().default([]), // [] = all
+    locationIds: jsonb("location_ids").$type<string[]>().notNull().default([]), // [] = all
+    firstOrderOnly: boolean("first_order_only").notNull().default(false),
+    oncePerCustomer: boolean("once_per_customer").notNull().default(true),
+    startsAt: timestamp("starts_at", { withTimezone: true }),
+    endsAt: timestamp("ends_at", { withTimezone: true }),
+    maxRedemptions: integer("max_redemptions"),
+    redemptions: integer("redemptions").notNull().default(0),
+    active: boolean("active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("promotions_brand_code").on(t.brandId, t.code)],
+);
+
+export const promoRedemptions = pgTable(
+  "promo_redemptions",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    promotionId: text("promotion_id")
+      .notNull()
+      .references(() => promotions.id, { onDelete: "cascade" }),
+    orderId: text("order_id").references(() => orders.id, { onDelete: "set null" }),
+    customerId: text("customer_id").references(() => customers.id, { onDelete: "set null" }),
+    discountCents: integer("discount_cents").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("promo_redemptions_promo_idx").on(t.promotionId), index("promo_redemptions_customer_idx").on(t.customerId)],
+);
+
+// ---------------------------------------------------------------------------
+// Cash drawer & daily close
+// ---------------------------------------------------------------------------
+
+export const cashDrawerSessions = pgTable(
+  "cash_drawer_sessions",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    locationId: text("location_id")
+      .notNull()
+      .references(() => locations.id, { onDelete: "cascade" }),
+    day: text("day").notNull(),
+    openedBy: text("opened_by").references(() => users.id, { onDelete: "set null" }),
+    openedAt: timestamp("opened_at", { withTimezone: true }).notNull().defaultNow(),
+    openingFloatCents: integer("opening_float_cents").notNull().default(0),
+    closedBy: text("closed_by").references(() => users.id, { onDelete: "set null" }),
+    closedAt: timestamp("closed_at", { withTimezone: true }),
+    countedCents: integer("counted_cents"),
+    paidOutCents: integer("paid_out_cents").notNull().default(0), // cash paid out (supplies etc.)
+    paidOutNote: text("paid_out_note"),
+    expectedCents: integer("expected_cents"),
+    varianceCents: integer("variance_cents"),
+    depositCents: integer("deposit_cents"),
+    note: text("note"),
+  },
+  (t) => [index("cash_drawer_location_day_idx").on(t.locationId, t.day)],
+);
+
+/** Locked snapshot of a store's day: the Z-report. One row per location per day. */
+export const dailyCloses = pgTable(
+  "daily_closes",
+  {
+    locationId: text("location_id")
+      .notNull()
+      .references(() => locations.id, { onDelete: "cascade" }),
+    day: text("day").notNull(),
+    closedBy: text("closed_by").references(() => users.id, { onDelete: "set null" }),
+    closedAt: timestamp("closed_at", { withTimezone: true }).notNull().defaultNow(),
+    ordersCount: integer("orders_count").notNull().default(0),
+    grossCents: integer("gross_cents").notNull().default(0),
+    discountCents: integer("discount_cents").notNull().default(0),
+    netCents: integer("net_cents").notNull().default(0),
+    gstCents: integer("gst_cents").notNull().default(0),
+    pstCents: integer("pst_cents").notNull().default(0),
+    tipsCents: integer("tips_cents").notNull().default(0),
+    feesCents: integer("fees_cents").notNull().default(0),
+    commissionCents: integer("commission_cents").notNull().default(0),
+    refundsCents: integer("refunds_cents").notNull().default(0),
+    byTender: jsonb("by_tender").$type<Record<string, number>>().notNull().default({}),
+    byChannel: jsonb("by_channel").$type<Record<string, { orders: number; grossCents: number }>>().notNull().default({}),
+    cashExpectedCents: integer("cash_expected_cents").notNull().default(0),
+    cashCountedCents: integer("cash_counted_cents").notNull().default(0),
+    cashVarianceCents: integer("cash_variance_cents").notNull().default(0),
+    tipAllocations: jsonb("tip_allocations").$type<Array<{ userId: string; name: string; hours: number; cents: number }>>().notNull().default([]),
+    labourCents: integer("labour_cents").notNull().default(0),
+    labourHours: numeric("labour_hours", { precision: 8, scale: 2 }).notNull().default("0"),
+    note: text("note"),
+    exportedAt: timestamp("exported_at", { withTimezone: true }),
+  },
+  (t) => [primaryKey({ columns: [t.locationId, t.day] })],
+);
+
+// ---------------------------------------------------------------------------
+// Staff API tokens (Vlink): issued after email/phone + PIN; bearer tokens, hashed at rest
+// ---------------------------------------------------------------------------
+
+export const staffTokens = pgTable(
+  "staff_tokens",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    tokenHash: text("token_hash").notNull().unique(),
+    device: text("device"),
+    apiClientId: text("api_client_id").references(() => apiClients.id, { onDelete: "set null" }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("staff_tokens_user_idx").on(t.userId)],
+);
+
+export const loyaltyAccountsRelations = relations(loyaltyAccounts, ({ one, many }) => ({
+  customer: one(customers, { fields: [loyaltyAccounts.customerId], references: [customers.id] }),
+  ledger: many(loyaltyLedger),
+}));
+export const loyaltyLedgerRelations = relations(loyaltyLedger, ({ one }) => ({
+  account: one(loyaltyAccounts, { fields: [loyaltyLedger.customerId], references: [loyaltyAccounts.customerId] }),
+  order: one(orders, { fields: [loyaltyLedger.orderId], references: [orders.id] }),
+}));
+export const staffTokensRelations = relations(staffTokens, ({ one }) => ({
+  user: one(users, { fields: [staffTokens.userId], references: [users.id] }),
+}));
+
+export type LoyaltyProgram = typeof loyaltyPrograms.$inferSelect;
+export type Promotion = typeof promotions.$inferSelect;
+export type DailyClose = typeof dailyCloses.$inferSelect;
